@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>标签拼版工具</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>标签拼版工具</h1>
+    <span class="subtitle">小批量标签自动排版 · 毫米坐标 · 预览与导出一致</span>
+  </header>
+
+  <main class="layout">
+    <!-- ===================== 左侧参数面板 ===================== -->
+    <section class="panel">
+      <h2>纸张</h2>
+      <div class="row">
+        <label>预设
+          <select id="paperPreset">
+            <option value="A4">A4（210×297）</option>
+            <option value="A3">A3（297×420）</option>
+            <option value="A5">A5（148×210）</option>
+            <option value="Letter">Letter（216×279）</option>
+            <option value="custom">自定义</option>
+          </select>
+        </label>
+        <label>方向
+          <select id="paperOrient">
+            <option value="portrait">纵向</option>
+            <option value="landscape">横向</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>纸宽 mm<input type="number" id="pageW" min="10" max="5000" step="0.1" value="210"></label>
+        <label>纸高 mm<input type="number" id="pageH" min="10" max="5000" step="0.1" value="297"></label>
+      </div>
+
+      <h2>页边距（mm）</h2>
+      <div class="row">
+        <label>上<input type="number" id="mTop" min="0" max="500" step="0.1" value="5"></label>
+        <label>右<input type="number" id="mRight" min="0" max="500" step="0.1" value="5"></label>
+      </div>
+      <div class="row">
+        <label>下<input type="number" id="mBottom" min="0" max="500" step="0.1" value="5"></label>
+        <label>左<input type="number" id="mLeft" min="0" max="500" step="0.1" value="5"></label>
+      </div>
+
+      <h2>间距与选项</h2>
+      <div class="row">
+        <label>横向间距 mm<input type="number" id="gapX" min="0" max="500" step="0.1" value="2"></label>
+        <label>纵向间距 mm<input type="number" id="gapY" min="0" max="500" step="0.1" value="2"></label>
+      </div>
+      <div class="row">
+        <label>最大页数<input type="number" id="maxSheets" min="0" max="10000" step="1" value="0" title="0 表示不限"></label>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="allowRotate" checked> 允许旋转 90°</label>
+        <label><input type="checkbox" id="showText" checked> 标签内显示文字</label>
+        <label><input type="checkbox" id="cropMarks" checked> 绘制裁切标记</label>
+      </div>
+
+      <h2>标签规格</h2>
+      <table class="labels-table">
+        <thead>
+          <tr><th>名称</th><th>宽 mm</th><th>高 mm</th><th>份数</th><th></th></tr>
+        </thead>
+        <tbody id="labelRows"></tbody>
+      </table>
+      <button type="button" class="btn ghost" id="addLabel">＋ 添加标签</button>
+
+      <div class="actions">
+        <button type="button" class="btn primary" id="runBtn">开始排版</button>
+      </div>
+      <div id="errorBox" class="error-box" hidden></div>
+    </section>
+
+    <!-- ===================== 右侧结果区 ===================== -->
+    <section class="result">
+      <div class="toolbar" id="toolbar" hidden>
+        <span id="stats" class="stats"></span>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="downloadBtn">下载 SVG</button>
+        <button type="button" class="btn" id="printBtn">打印</button>
+      </div>
+
+      <div id="summaryWrap" hidden>
+        <h3>每种标签实际排入数量</h3>
+        <table class="summary-table">
+          <thead>
+            <tr><th></th><th>名称</th><th>规格</th><th>需求</th><th>已排入</th><th>未排</th></tr>
+          </thead>
+<tbody id="summaryBody"></tbody>
+        </table>
+        <ul id="warnings" class="warnings"></ul>
+      </div>
+
+      <div id="pages" class="pages"></div>
+      <p id="emptyHint" class="empty-hint">在左侧设置纸张、边距、间距与标签规格后，点击「开始排版」。</p>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

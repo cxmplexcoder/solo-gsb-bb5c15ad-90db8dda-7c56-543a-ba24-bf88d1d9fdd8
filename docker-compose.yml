@@ -1,0 +1,15 @@
+services:
+  label-layout:
+    build: .
+    image: label-layout:latest
+    container_name: label-layout
+    ports:
+      - "8000:8000"
+    volumes:
+      - label-data:/data
+    environment:
+      - DATA_DIR=/data
+    restart: unless-stopped
+
+volumes:
+  label-data:
