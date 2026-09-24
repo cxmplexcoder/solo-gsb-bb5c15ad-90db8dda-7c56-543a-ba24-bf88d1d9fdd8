@@ -1,0 +1,239 @@
+"""标签拼版核心算法。
+
+使用天际线（skyline）左下角装箱：标签逐个放到当前可用的最低处，
+放不下则续页。支持旋转。所有坐标单位为毫米，原点在纸张左上角。
+
+间距处理：每个标签放置时按 (标签宽 + gap_x) × (标签高 + gap_y)
+预留位置，同时把可排区域在右、下方向各扩展一个间距（仅用于装箱
+判断）。于是相邻标签之间恰好间隔 gap，而第一张/最后一张标签可以
+紧贴页边距，纸张边缘不会多出半个间距。
+"""
+
+from __future__ import annotations
+
+from .models import (
+    LabelSpec,
+    LayoutRequest,
+    LayoutResponse,
+    LabelSummary,
+    PageLayout,
+    PlacedLabel,
+)
+
+EPS = 1e-6
+
+
+def _r(v: float) -> float:
+    """输出坐标统一保留 2 位小数，避免 SVG 里出现长浮点。"""
+    return round(v + 0.0, 2)
+
+
+class _Skyline:
+    """天际线段：[x, x+w) 区间内盒子可以放置的最低 y。"""
+
+    def __init__(
+        self,
+        area_x: float,
+        area_y: float,
+        content_w: float,
+        content_h: float,
+        gap_x: float,
+        gap_y: float,
+    ):
+        self.area_x = area_x
+        self.area_y = area_y
+        self.content_w = content_w  # 真实可排区域
+        self.content_h = content_h
+        # 盒右最多到达 真实右边界 + 一个间距（把尾部间距“借”到界外）
+        self.limit_x = area_x + content_w + gap_x
+        self.limit_y = area_y + content_h + gap_y
+        self.segments: list[dict] = [
+            {"x": area_x, "w": content_w + gap_x, "y": area_y}
+        ]
+
+    def find_position(self, w: float, h: float) -> tuple[float, float] | None:
+        """在天际线上找能容纳 w×h 盒子的位置，先最低 y、再最左 x。
+
+        边界条件为 盒右 ≤ 内容右 + gap；因盒宽 = 标签宽 + gap，
+        等价于标签右缘不超出内容区，尾部 gap 可以悬空。
+        """
+        best: tuple[float, float] | None = None
+        for i, seg in enumerate(self.segments):
+            x = seg["x"]
+            if x + w > self.limit_x + EPS:
+                continue
+            y = seg["y"]
+            covered = 0.0
+            j = i
+            while j < len(self.segments) and covered + EPS < w:
+                y = max(y, self.segments[j]["y"])
+                covered += self.segments[j]["w"]
+                j += 1
+            if covered + EPS < w:
+                continue
+            if y + h > self.limit_y + EPS:
+                continue
+            if best is None or y < best[1] - EPS or (abs(y - best[1]) <= EPS and x < best[0]):
+                best = (x, y)
+        return best
+
+    def add(self, x: float, y: float, w: float, h: float) -> None:
+        """放入 w×h 盒子（左上角 x,y）后抬升对应天际线。"""
+        new_top = y + h
+        kept: list[dict] = []
+        for seg in self.segments:
+            sx, sw, sy = seg["x"], seg["w"], seg["y"]
+            if sx + sw <= x + EPS or sx >= x + w - EPS:
+                kept.append(seg)  # 完全在盒子左/右侧
+                continue
+            if sx < x - EPS:  # 左侧残余
+                kept.append({"x": sx, "w": x - sx, "y": sy})
+            if sx + sw > x + w + EPS:  # 右侧残余
+                kept.append({"x": x + w, "w": sx + sw - (x + w), "y": sy})
+        kept.append({"x": x, "w": w, "y": new_top})
+        kept.sort(key=lambda s: s["x"])
+        # 合并同高相邻段，抑制线段数量增长
+        merged: list[dict] = []
+        for seg in kept:
+            if merged and abs(merged[-1]["y"] - seg["y"]) <= EPS and abs(
+                merged[-1]["x"] + merged[-1]["w"] - seg["x"]
+            ) <= EPS:
+                merged[-1]["w"] += seg["w"]
+            else:
+                merged.append(dict(seg))
+        self.segments = merged
+
+
+def compute_layout(req: LayoutRequest) -> LayoutResponse:
+    """执行整批标签的拼版计算。"""
+
+    area_x = req.margin_left
+    area_y = req.margin_top
+    area_w = req.page_width - req.margin_left - req.margin_right
+    area_h = req.page_height - req.margin_top - req.margin_bottom
+
+    warnings: list[str] = []
+    if area_w <= EPS or area_h <= EPS:
+        raise ValueError(
+            "页边距过大：上下/左右边距之和不能达到或超过纸张尺寸，请减小页边距。"
+        )
+
+    # 装箱用区域（向右、向下各借用一个间距）
+    sky_area_w = area_w + req.gap_x
+    sky_area_h = area_h + req.gap_y
+
+    def candidate_boxes(i: int) -> list[tuple[bool, float, float]]:
+        """返回 [(rotated, 盒宽, 盒高)]，不旋转方向优先。"""
+        spec: LabelSpec = req.labels[i]
+        boxes = [(False, spec.width + req.gap_x, spec.height + req.gap_y)]
+        if spec.allow_rotate:
+            boxes.append((True, spec.height + req.gap_x, spec.width + req.gap_y))
+        return boxes
+
+    # 预检：任何方向都放不下的标签直接判为排入失败
+    fits_any: list[bool] = []
+    for i, spec in enumerate(req.labels):
+        ok = any(
+            bw <= sky_area_w + EPS and bh <= sky_area_h + EPS
+            for _, bw, bh in candidate_boxes(i)
+        )
+        fits_any.append(ok)
+        if not ok:
+            warnings.append(
+                f"标签「{spec.name or i + 1}」{_r(spec.width)}×{_r(spec.height)}mm "
+                f"超过可排版区域 {_r(area_w)}×{_r(area_h)}mm，全部 {spec.count} 份未能排入。"
+            )
+
+    pages: list[PageLayout] = []
+    placed_count = [0] * len(req.labels)
+    rotated_count = [0] * len(req.labels)
+    remaining = [
+        spec.count if fits_any[i] else 0 for i, spec in enumerate(req.labels)
+    ]
+
+    def new_page() -> _Skyline:
+        pages.append(
+            PageLayout(
+                page=len(pages) + 1,
+                width=req.page_width,
+                height=req.page_height,
+                labels=[],
+            )
+        )
+        return _Skyline(area_x, area_y, area_w, area_h, req.gap_x, req.gap_y)
+
+    def place(sky: _Skyline, i: int, rotated: bool, bw: float, bh: float) -> None:
+        spec: LabelSpec = req.labels[i]
+        x, y = sky.find_position(bw, bh)  # type: ignore[misc]
+        sky.add(x, y, bw, bh)
+        lw = spec.height if rotated else spec.width
+        lh = spec.width if rotated else spec.height
+        pages[-1].labels.append(
+            PlacedLabel(
+                type_index=i,
+                name=spec.name,
+                x=_r(x),
+                y=_r(y),
+                width=_r(lw),
+                height=_r(lh),
+                rotated=rotated,
+            )
+        )
+        placed_count[i] += 1
+        if rotated:
+            rotated_count[i] += 1
+
+    # 多趟扫描：每趟按用户输入顺序放置；当前页放不下的标签留给新页，
+    # 后续较小的标签仍可回填本页空隙。没有任何标签能放下时续页。
+    sky = new_page()
+    while sum(remaining) > 0:
+        progressed = False
+        for i, rem in enumerate(remaining):
+            if rem <= 0:
+                continue
+            for rotated, bw, bh in candidate_boxes(i):
+                if sky.find_position(bw, bh) is not None:
+                    place(sky, i, rotated, bw, bh)
+                    remaining[i] -= 1
+                    progressed = True
+                    break
+        if not progressed:
+            sky = new_page()
+
+    summaries = [
+        LabelSummary(
+            type_index=i,
+            name=spec.name,
+            width=_r(spec.width),
+            height=_r(spec.height),
+            requested=spec.count,
+            placed=placed_count[i],
+            rotated=rotated_count[i],
+            unplaced=spec.count - placed_count[i],
+        )
+        for i, spec in enumerate(req.labels)
+    ]
+
+    return LayoutResponse(
+        pages=[
+            PageLayout(
+                page=p.page,
+                width=_r(p.width),
+                height=_r(p.height),
+                labels=p.labels,
+            )
+            for p in pages
+        ],
+        summaries=summaries,
+        total_requested=sum(s.count for s in req.labels),
+        total_placed=sum(placed_count),
+        warnings=warnings,
+        page_width=_r(req.page_width),
+        page_height=_r(req.page_height),
+        margin_top=_r(req.margin_top),
+        margin_right=_r(req.margin_right),
+        margin_bottom=_r(req.margin_bottom),
+        margin_left=_r(req.margin_left),
+        gap_x=_r(req.gap_x),
+        gap_y=_r(req.gap_y),
+    )
